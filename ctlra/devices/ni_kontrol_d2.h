@@ -207,5 +207,8 @@ uint8_t *ni_kontrol_d2_screen_get_pixels(struct ctlra_dev_t *base);
 /* Blit data to the screen. */
 void ni_kontrol_d2_screen_blit(struct ctlra_dev_t *base);
 
+/* Blit a specific zone of data to the screen. */
+void ni_kontrol_d2_screen_blit_zone(struct ctlra_dev_t *base, uint16_t x, uint16_t y, uint16_t width, uint16_t height);
+
 #endif /* OPENAV_CTLRA_NI_KONTROL_D2_H */
 

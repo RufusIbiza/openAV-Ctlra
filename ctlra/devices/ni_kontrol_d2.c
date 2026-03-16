@@ -517,6 +517,64 @@ ni_kontrol_d2_screen_blit(struct ctlra_dev_t *base)
 		printf("%s write failed!\n", __func__);
 }
 
+void
+ni_kontrol_d2_screen_blit_zone(struct ctlra_dev_t *base, uint16_t x, uint16_t y, uint16_t width, uint16_t height)
+{
+	struct ni_kontrol_d2_t *dev = (struct ni_kontrol_d2_t *)base;
+
+	/* The D2 hardware expects coordinates and widths that are multiples of 4 (or 2)
+     * due to the way it packs inner pixels. If we send odd values, it misaligns the
+     * stride geometry causing a vertical tearing/flashing effect. Let's align them. */
+	x = x & ~3;
+	y = y & ~1;
+	width = (width + 3) & ~3;
+	height = (height + 1) & ~1;
+
+	if (x >= 480 || y >= 272) return;
+	if (x + width > 480) width = 480 - x;
+	if (y + height > 272) height = 272 - y;
+	if (width == 0 || height == 0) return;
+
+	uint32_t num_px = width * height;
+	uint32_t transfer_size = sizeof(header) + sizeof(command) + (num_px * 2) + sizeof(footer);
+
+	uint8_t *payload = (uint8_t *)malloc(transfer_size);
+	if (!payload) return;
+
+	memcpy(payload, header, sizeof(header));
+	payload[8] = (x >> 8) & 0xFF;
+	payload[9] = x & 0xFF;
+	payload[10] = (y >> 8) & 0xFF;
+	payload[11] = y & 0xFF;
+	payload[12] = (width >> 8) & 0xFF;
+	payload[13] = width & 0xFF;
+	payload[14] = (height >> 8) & 0xFF;
+	payload[15] = height & 0xFF;
+
+	uint8_t *cmd_ptr = payload + sizeof(header);
+	memcpy(cmd_ptr, command, sizeof(command));
+	uint16_t px_half = num_px / 2;
+	cmd_ptr[2] = (px_half >> 8) & 0xFF;
+	cmd_ptr[3] = px_half & 0xFF;
+
+	uint8_t *pix_ptr = payload + sizeof(header) + sizeof(command);
+	for (uint16_t row = 0; row < height; row++) {
+		uint32_t src_offset = ((y + row) * 480 + x) * 2;
+		memcpy(pix_ptr + (row * width * 2), dev->screen_blit.pixels + src_offset, width * 2);
+	}
+
+	uint8_t *foot_ptr = payload + sizeof(header) + sizeof(command) + (num_px * 2);
+	memcpy(foot_ptr, footer, sizeof(footer));
+
+	int ret = ctlra_dev_impl_usb_bulk_write(base, USB_INTERFACE_SCREEN,
+						USB_ENDPOINT_SCREEN_WRITE,
+						payload, transfer_size);
+	if(ret < 0)
+		printf("%s write failed!\n", __func__);
+
+	free(payload);
+}
+
 int32_t
 ni_kontrol_d2_screen_get_data(struct ctlra_dev_t *base,
 			      uint32_t screen_idx,
