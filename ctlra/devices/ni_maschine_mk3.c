@@ -890,6 +890,73 @@ maschine_mk3_blit_to_screen(struct ni_maschine_mk3_t *dev, int scr)
 		printf("%s screen write failed!\n", __func__);
 }
 
+void
+ni_maschine_mk3_screen_blit_zone(struct ctlra_dev_t *base, uint8_t screen_idx, uint16_t x, uint16_t y, uint16_t width, uint16_t height)
+{
+	struct ni_maschine_mk3_t *dev = (struct ni_maschine_mk3_t *)base;
+
+	/* The MK3 hardware, like the D2, expects coordinates and widths that are multiples of 4 (or 2) */
+	x = x & ~3;
+	y = y & ~1;
+	width = (width + 3) & ~3;
+	height = (height + 1) & ~1;
+
+	if (x >= 480 || y >= 272) return;
+	if (x + width > 480) width = 480 - x;
+	if (y + height > 272) height = 272 - y;
+	if (width == 0 || height == 0) return;
+
+	struct ni_screen_t *screen = (screen_idx == 1) ? &dev->screen_right : &dev->screen_left;
+
+	uint32_t num_px = width * height;
+	uint32_t transfer_size = sizeof(screen->header) + sizeof(screen->command) + (num_px * 2) + sizeof(screen->footer);
+
+	uint8_t *payload = (uint8_t *)malloc(transfer_size);
+	if (!payload) return;
+
+	/* 1. Header (contains screen index routing 0x00 or 0x01 automatically from the struct) */
+	memcpy(payload, screen->header, sizeof(screen->header));
+	
+	/* The bounding box bytes in header are at index 8-15 */
+	payload[8] = (x >> 8) & 0xFF;
+	payload[9] = x & 0xFF;
+	payload[10] = (y >> 8) & 0xFF;
+	payload[11] = y & 0xFF;
+	payload[12] = (width >> 8) & 0xFF;
+	payload[13] = width & 0xFF;
+	payload[14] = (height >> 8) & 0xFF;
+	payload[15] = height & 0xFF;
+
+	/* 2. Command */
+	uint8_t *cmd_ptr = payload + sizeof(screen->header);
+	memcpy(cmd_ptr, screen->command, sizeof(screen->command));
+	uint16_t px_half = num_px / 2;
+	cmd_ptr[2] = (px_half >> 8) & 0xFF;
+	cmd_ptr[3] = px_half & 0xFF;
+
+	/* 3. Pixels */
+	uint8_t *pix_ptr = payload + sizeof(screen->header) + sizeof(screen->command);
+	uint8_t *source_pixels = (uint8_t *)screen->pixels;
+	
+	for (uint16_t row = 0; row < height; row++) {
+		uint32_t src_offset = ((y + row) * 480 + x) * 2;
+		memcpy(pix_ptr + (row * width * 2), source_pixels + src_offset, width * 2);
+	}
+
+	/* 4. Footer */
+	uint8_t *foot_ptr = payload + sizeof(screen->header) + sizeof(screen->command) + (num_px * 2);
+	memcpy(foot_ptr, screen->footer, sizeof(screen->footer));
+
+	int ret = ctlra_dev_impl_usb_bulk_write(base, USB_HANDLE_SCREEN_IDX,
+						USB_ENDPOINT_SCREEN_WRITE,
+						payload, transfer_size);
+	if(ret < 0)
+		printf("%s write failed!\n", __func__);
+
+	free(payload);
+}
+
+
 /** Skip forward in the screen by *num_px* amount of pixels. */
 static inline void
 ni_screen_skip(uint8_t *data, uint32_t *idx, uint32_t num_px)
@@ -930,6 +997,15 @@ ni_screen_var_px(uint8_t *data, uint32_t *idx, uint32_t num_px,
 	/* iterate provided pixels: 565 has 2 bpp, hence *2 */
 	for(int i = 0; i < num_px * 2; i++)
 		data[(*idx)++] = px_data[i];
+}
+
+uint8_t *
+ni_maschine_mk3_screen_get_pixels(struct ctlra_dev_t *base, uint8_t screen_idx)
+{
+	struct ni_maschine_mk3_t *dev = (struct ni_maschine_mk3_t *)base;
+	if (screen_idx == 0) return (uint8_t *)&dev->screen_left.pixels;
+	if (screen_idx == 1) return (uint8_t *)&dev->screen_right.pixels;
+	return NULL;
 }
 
 int32_t
