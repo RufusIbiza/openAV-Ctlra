@@ -8,8 +8,11 @@
 extern "C" {
 #endif
 
-// Partial screen updates for the MK3
+// Full screen blits (send entire framebuffer to device)
 uint8_t* ni_maschine_mk3_screen_get_pixels(struct ctlra_dev_t* dev, uint8_t screen_idx);
+void ni_maschine_mk3_screen_blit(struct ctlra_dev_t* dev, uint8_t screen_idx);
+
+// Partial screen update - sends only a bounding-box sub-region (experimental on Mk3)
 void ni_maschine_mk3_screen_blit_zone(struct ctlra_dev_t* dev, uint8_t screen_idx, uint16_t x, uint16_t y, uint16_t width, uint16_t height);
 
 // Mapped Control and LED IDs as analyzed in ni_maschine_mk3.c

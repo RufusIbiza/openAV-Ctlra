@@ -242,6 +242,12 @@ void ctlra_impl_usb_idle_iter(struct ctlra_t *ctlra)
 	 * 2nd: timeval to wait - 0 returns as if non blocking
 	 * 3rd: int* to completed event - unused by Ctlra */
 	libusb_handle_events_timeout_completed(ctlra->ctx, &tv, NULL);
+	/* Device handles are opened via libusb_get_device_list(NULL, ...) so
+	 * they are bound to the default/NULL libusb context, which is separate
+	 * from ctlra->ctx. Without also pumping NULL here, async bulk-write
+	 * completion callbacks never fire, USB_XFER_INFLIGHT_WRITE never
+	 * decrements, and new screen blits are silently dropped after 10. */
+	libusb_handle_events_timeout_completed(NULL, &tv, NULL);
 }
 
 int ctlra_dev_impl_usb_init(struct ctlra_t *ctlra)

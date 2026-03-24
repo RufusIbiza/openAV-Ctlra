@@ -1,6 +1,6 @@
 # Partial Screen Updates API for NI Kontrol D2
 
-This document details the newly added API for performing partial screen updates on the Native Instruments Kontrol D2 screen.
+This document details the API for performing partial screen updates on the Native Instruments Kontrol D2 screen.
 
 ## Why Partial Updates?
 

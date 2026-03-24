@@ -876,18 +876,36 @@ ni_maschine_mk3_light_flush(struct ctlra_dev_t *base, uint32_t force)
 					   LIGHTS_SIZE + 1);
 }
 
+#include <libusb-1.0/libusb.h>
+
 static void
 maschine_mk3_blit_to_screen(struct ni_maschine_mk3_t *dev, int scr)
 {
 	void *data = (scr == 1) ? &dev->screen_right : &dev->screen_left;
+	uint32_t size = sizeof(dev->screen_left);
 
-	int ret = ctlra_dev_impl_usb_bulk_write(&dev->base,
-						USB_HANDLE_SCREEN_IDX,
-						USB_ENDPOINT_SCREEN_WRITE,
-						data,
-						sizeof(dev->screen_left));
-	if(ret < 0)
-		printf("%s screen write failed!\n", __func__);
+	/* Use synchronous bulk transfer for screen blits. The device
+	 * handle is on the default (NULL) libusb context, so
+	 * libusb_bulk_transfer pumps the correct context internally.
+	 * Synchronous writes naturally pace to the device's processing
+	 * speed (~30 transfers/sec), ensuring both screens get fair
+	 * access to the USB endpoint. The async path piles up inflight
+	 * writes that starve whichever screen is submitted second. */
+	int transferred = 0;
+	int ret = libusb_bulk_transfer(
+		dev->base.usb_handle[USB_HANDLE_SCREEN_IDX],
+		USB_ENDPOINT_SCREEN_WRITE,
+		data, size, &transferred, 200);
+	if(ret < 0 && ret != LIBUSB_ERROR_TIMEOUT && ret != LIBUSB_ERROR_BUSY)
+		printf("%s blit scr %d failed: %s\n", __func__, scr,
+		       libusb_error_name(ret));
+}
+
+void
+ni_maschine_mk3_screen_blit(struct ctlra_dev_t *base, uint8_t screen_idx)
+{
+	struct ni_maschine_mk3_t *dev = (struct ni_maschine_mk3_t *)base;
+	maschine_mk3_blit_to_screen(dev, screen_idx);
 }
 
 void
@@ -947,11 +965,15 @@ ni_maschine_mk3_screen_blit_zone(struct ctlra_dev_t *base, uint8_t screen_idx, u
 	uint8_t *foot_ptr = payload + sizeof(screen->header) + sizeof(screen->command) + (num_px * 2);
 	memcpy(foot_ptr, screen->footer, sizeof(screen->footer));
 
-	int ret = ctlra_dev_impl_usb_bulk_write(base, USB_HANDLE_SCREEN_IDX,
-						USB_ENDPOINT_SCREEN_WRITE,
-						payload, transfer_size);
-	if(ret < 0)
-		printf("%s write failed!\n", __func__);
+	/* Synchronous transfer — see comment in maschine_mk3_blit_to_screen */
+	int transferred = 0;
+	int ret = libusb_bulk_transfer(
+		dev->base.usb_handle[USB_HANDLE_SCREEN_IDX],
+		USB_ENDPOINT_SCREEN_WRITE,
+		payload, transfer_size, &transferred, 200);
+	if(ret < 0 && ret != LIBUSB_ERROR_TIMEOUT && ret != LIBUSB_ERROR_BUSY)
+		printf("%s zone write failed: %s\n", __func__,
+		       libusb_error_name(ret));
 
 	free(payload);
 }
@@ -1003,8 +1025,8 @@ uint8_t *
 ni_maschine_mk3_screen_get_pixels(struct ctlra_dev_t *base, uint8_t screen_idx)
 {
 	struct ni_maschine_mk3_t *dev = (struct ni_maschine_mk3_t *)base;
-	if (screen_idx == 0) return (uint8_t *)&dev->screen_left.pixels;
-	if (screen_idx == 1) return (uint8_t *)&dev->screen_right.pixels;
+	if (screen_idx == 0) return (uint8_t *)dev->screen_left.pixels;
+	if (screen_idx == 1) return (uint8_t *)dev->screen_right.pixels;
 	return NULL;
 }
 
@@ -1186,29 +1208,36 @@ ctlra_ni_maschine_mk3_connect(ctlra_event_func event_func,
 	if(!dev)
 		goto fail;
 
+	fprintf(stderr, "[MK3] usb_open...\n");
 	int err = ctlra_dev_impl_usb_open(&dev->base,
 					  CTLRA_DRIVER_VENDOR,
 					  CTLRA_DRIVER_DEVICE);
 	if(err) {
+		fprintf(stderr, "[MK3] usb_open FAILED\n");
 		free(dev);
 		return 0;
 	}
+	fprintf(stderr, "[MK3] usb_open OK\n");
 
+	fprintf(stderr, "[MK3] open iface %d (buttons)...\n", USB_INTERFACE_ID);
 	err = ctlra_dev_impl_usb_open_interface(&dev->base,
 					 USB_INTERFACE_ID, USB_HANDLE_IDX);
 	if(err) {
-		printf("error opening interface\n");
+		fprintf(stderr, "[MK3] buttons iface FAILED\n");
 		free(dev);
 		return 0;
 	}
+	fprintf(stderr, "[MK3] buttons iface OK\n");
 
+	fprintf(stderr, "[MK3] open iface %d (screen)...\n", USB_INTERFACE_SCREEN);
 	err = ctlra_dev_impl_usb_open_interface(&dev->base,
 	                                        USB_INTERFACE_SCREEN,
 	                                        USB_HANDLE_SCREEN_IDX);
 	if(err) {
-		printf("%s: failed to open screen usb interface\n", __func__);
+		fprintf(stderr, "[MK3] screen iface FAILED\n");
 		goto fail;
 	}
+	fprintf(stderr, "[MK3] screen iface OK\n");
 
 	/* initialize blit mem in driver */
 	memcpy(dev->screen_left.header , header_left, sizeof(dev->screen_left.header));
@@ -1231,8 +1260,12 @@ ctlra_ni_maschine_mk3_connect(ctlra_event_func event_func,
 		*sl++ = col;
 		*sr++ = col;
 	}
+	fprintf(stderr, "[MK3] init blit left...\n");
 	maschine_mk3_blit_to_screen(dev, 0);
+	fprintf(stderr, "[MK3] init blit left DONE\n");
+	fprintf(stderr, "[MK3] init blit right...\n");
 	maschine_mk3_blit_to_screen(dev, 1);
+	fprintf(stderr, "[MK3] init blit right DONE\n");
 
 	dev->pad_colour = pad_cols[0];
 	dev->lights_dirty = 1;
